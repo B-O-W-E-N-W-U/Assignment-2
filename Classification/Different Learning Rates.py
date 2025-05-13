@@ -46,8 +46,7 @@ def iris_data_preprocess(encoding, split_ratio):
     return irisxtrain, irisdtrain, irisxtest, irisdtest
 
 # Plot prediction results 
-def classification_plot(weight, train, traintarget, test, testtarget, layer, act_func, eta, beta1,
-                        beta2, eps, algorithm, performance, max_epoch):                                       
+def classification_plot(weight, train, traintarget, test, testtarget, layer, act_func, eta, beta1, beta2, eps, algorithm, performance, max_epoch):                                       
     costtrainrecordd, costtestrecordd, epochrecordd, cmm = [], [], [], []                                              
     y = prediction(weight, test, testtarget, act_func)
     y_pred = np.argmax(y, axis=0) # Convert predictions to class indices
@@ -58,7 +57,6 @@ def classification_plot(weight, train, traintarget, test, testtarget, layer, act
         print('Start training:', algorithm[0], eta[i], layer)
         print('training progress:')
         y, costtrainrecord, costtestrecord, epochrecord = classification(train, traintarget, test, testtarget, layer, act_func, eta[i], beta1, beta2, eps, algorithm[0], performance, max_epoch)
-
         y_pred = np.argmax(y, axis=0)                                                                                   
         y_true = np.argmax(testtarget, axis=0)                                                                         
         cm = confusion_matrix(y_true, y_pred)                                                                      
