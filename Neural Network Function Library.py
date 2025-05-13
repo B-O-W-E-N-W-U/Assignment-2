@@ -1,24 +1,10 @@
 import numpy as np
-import matplotlib.pyplot as plt
-import pandas as pd
-import warnings
 
-from joblib.backports import access_denied_errors
-
-# warnings.filterwarnings('ignore')  # Ignore trivial warnings
-plt.rcParams['axes.grid'] = True  # Turn on the grid for all future plots
-np.random.seed(1000-7)  # Use the same random data for future comparison
-
-xtrain = np.array([np.linspace(-1, 1, 41)])
-dtrain = 0.8 * xtrain ** 3 + 0.3 * xtrain ** 2 - 0.4 * xtrain + np.random.normal(0, 0.02, np.shape(xtrain)[1])
-xtest = np.array([np.linspace(-0.97, 0.93, 39)])
-dtest = 0.8 * xtest ** 3 + 0.3 * xtest ** 2 - 0.4 * xtest + np.random.normal(0, 0.02, np.shape(xtest)[1])
-
-
-def activation(x, func_name): # Generalized activation functions
+# Create an activation function dictionary from which the activation functions are chosen
+def activation(x, func_name):
     if func_name == 'relu':
         return np.maximum(0, x)
-    elif func_name == 'leaky_relu':
+    elif func_name == 'relu_leaky':
         return np.maximum(0.01 * x, x)
     elif func_name == 'logsig':
         return 1 / (1 + np.exp(-x))
@@ -26,14 +12,12 @@ def activation(x, func_name): # Generalized activation functions
         return np.tanh(x)
     elif func_name == 'linear':
         return x
-    else:
-        raise ValueError("Unknown activation function: " + func_name)
 
-
-def activation_derivative(x, func_name): # Generalized derivatives
+# Create the corresponding activation function's derivative dictionary
+def activation_derivative(x, func_name):
     if func_name == 'relu':
         return np.where(x >= 0, 1, 0)
-    elif func_name == 'leaky_relu':
+    elif func_name == 'relu_leaky':
         return np.where(x >= 0, 1, 0.01)
     elif func_name == 'logsig':
         logs = 1 / (1 + np.exp(-x))
@@ -41,209 +25,127 @@ def activation_derivative(x, func_name): # Generalized derivatives
     elif func_name == 'tanh':
         return 1 - np.square(np.tanh(x))
     elif func_name == 'linear':
-        return 1
-    else:
-        raise ValueError("Unknown activation function: " + func_name)
+        return np.ones([len(x),1])                                                                                      # Return an array of 1 instead of a single 1
 
-
-def weight_generate(low, high, layer, train):
-    weight = {}
-    for i in range(len(layer)):  # Randomize weights for all layers
-        if i == 0:  # Dealing with the input layer
-            weight[i] = np.random.uniform(low, high, [layer[i], np.shape(train)[0] + 1])  # Include bias weight in the overall weight matrix
-        else:  # For rest of the layers
-            weight[i] = np.random.uniform(low, high, [layer[i], layer[i - 1] + 1])
-    return weight
-
-
-def forward_propagation(weight, train, act_func, column_no):
-    v, xo = {}, {}
+# Initialize weight, first and second moment matrices for all layers
+def parameter_generate(layer, train):
+    weight, mAd, vAd = {}, {}, {}                                                                                       # Create dictionaries to store information of different layers
+    input_dim = np.shape(train)[0]                                                                                      # Dimension of training input
+    for i in range(len(layer)):
+        if i == 0:                                                                                                      # Weight matrix for the input layer
+            weight[i] = np.random.uniform(-1, 1, [layer[i], input_dim])
+        else:
+            weight[i] = np.random.uniform(-1, 1, [layer[i], layer[i - 1] + 1])                                          # Weight matrices for the hidden and the output layers
     for i in range(len(weight)):
-        if i == 0:  # Dealing with the input layer
-            v[i] = weight[i] @ np.reshape(np.insert(train[:, column_no], 0 ,1),[np.shape(train)[0] + 1, 1])  # Add 1 on top of all input and select all the elements in a column
-        else:  # For rest of the layers
-            v[i] = weight[i] @ np.reshape(xo[i - 1], [len(xo[i - 1]), 1])  # Shape the output at each layer to match the column of the weight matrix
-        if i != len(weight) - 1:  # Check if the current layer is the output layer
-            xo[i] = np.insert(activation(v[i], act_func[i]), 0,1)  # Use tanh for all hidden layers and add the bias '1' in every layer's output
-        else:  # For the output layer
-            xo[i] = activation(v[i], act_func[i])  # The bias '1' is removed since v for the final layer is already obtained
+        mAd[i] = vAd[i] = np.zeros(weight[i].shape)                                                                     # Initialize first and second order moments to zero according to the size of the weight matrices
+    return weight, mAd, vAd
+
+# Forward propagation, generate a prediction based on a set of current weight
+def forward_propagation(weight, train, act_func, column):
+    v, xo = {}, {}                                                                                                      # Store Net activation and activation in dictionaries for Back Propagation
+    input_dim = np.shape(train)[0]
+    for i in range(len(weight)):
+        if i == 0:                                                                                                      # Net activation for the first hidden layer
+            v[i] = weight[i] @ np.reshape(train[:, column], [input_dim, 1])                                             # Reshape explicitly to maintain the vector property of the training input
+        else:                                                                                                           # Net activation for rest of the layers
+            v[i] = weight[i] @ np.reshape(xo[i - 1],[len(xo[i - 1]), 1])                                                #'@' represent matrix multiplication
+        if i != len(weight) - 1:                                                                                        # Activation for the hidden layers
+            xo[i] = np.insert(activation(v[i], act_func[i]),0,1)                                                        # Include the bias '1' in every activation
+        else:                                                                                                           # Activation for the output layer
+            xo[i] = activation(v[i], act_func[i])                                                                       # Exclude the bias '1' for the output layer
     return v, xo
 
-
-def SGD(weight, layer, train, trtarget, v, xo, column_no, eta, act_func):
-    for k in range(len(layer) - 1, -1, -1):
-        if k == len(layer) - 1:
-            delta = (np.reshape(trtarget[:, column_no], [len(trtarget[:, column_no]), 1]) - xo[k]) * activation_derivative(v[k], act_func[k])  # The bias input '1' is removed when calculating delta
-        else:
-            delta = (weight[k + 1][:, 1:].T @ delta) * np.reshape(activation_derivative(v[k], act_func[k]), [len(v[k]), 1])  # So does the bias weights in the first column
-        if k != 0:
-            weight[k] = weight[k] + eta * delta @ np.reshape(xo[k - 1], [1, len(xo[k - 1])])  # Update the weights
-        else:
-            weight[k] = weight[k] + eta * delta @ np.reshape(np.insert(train[:, column_no], 0, 1), [1, np.shape(train)[0] + 1])  # Don't forget the bias of 1 for the input layer
+# Stochastic Gradient Descent
+def SGD(weight, layer, train, traintarget, v, xo, column, eta, act_func):
+    input_dim = np.shape(train)[0]
+    for i in range(len(layer) - 1, -1, -1):
+        if i == len(layer) - 1:                                                                                                                                             # Local gradient for the output layer neurons
+            delta = (np.reshape(traintarget[:, column], [len(traintarget[:, column]), 1]) - xo[i]) * np.reshape(activation_derivative(v[i], act_func[i]), [len(v[i]), 1])
+        else:                                                                                                                                                               # Local gradient for the hidden layer neurons: current layer local gradient = last layer weight(excluding bias) transposed @ last layer local gradient x current layer activation functions' derivative
+            delta = (weight[i + 1][:, 1:].T @ delta) * np.reshape(activation_derivative(v[i], act_func[i]), [len(v[i]), 1])
+        if i != 0:                                                                                                                                                          # Update the weight in the output and the hidden layers
+            weight[i] = weight[i] + eta * delta @ np.reshape(xo[i - 1], [1, len(xo[i - 1])])                                                                                # Equivalent to the cross product of the current layer local gradient and the previous layer activation
+        else:                                                                                                                                                               # Update the weight for the input layer
+            weight[i] = weight[i] + eta * delta @ np.reshape(train[:, column],[1, input_dim])
     return weight
 
-
-def Adam(weight, momentum, velocity, layer, train, trtarget, v, xo, column_no, eta, act_func, epoch):
-    beta1 = 0.9 # 'Good' Values to choose according to publications
-    beta2 = 0.999
-    epsilon = 1e-8
+# Adaptive Moment Estimation
+def Adam(weight, mAD, vAD, layer, train, traintarget, v, xo, column, eta, beta1Adam, beta2Adam, epsAdam, act_func, epoch):
+    input_dim = np.shape(train)[0]
     for k in range(len(layer) - 1, -1, -1):
-        if k == len(layer) - 1:
-            delta = (np.reshape(trtarget[:, column_no], [len(trtarget[:, column_no]), 1]) - xo[k]) * activation_derivative(v[k], act_func[k])  # The bias input '1' is removed when calculating delta
-        else:
-            delta = (weight[k + 1][:, 1:].T @ delta) * np.reshape(activation_derivative(v[k], act_func[k]), [len(v[k]), 1])  # So does the bias weights in the first column
-        if k != 0:
-            momentum[k] = beta1 * momentum[k] + (1 - beta1) * - delta @ np.reshape(xo[k - 1], [1, len(xo[k - 1])]) # Calculate momentum and velocity
-            velocity[k] = beta2 * velocity[k] + (1 - beta2) * np.square(- delta @ np.reshape(xo[k - 1], [1, len(xo[k - 1])]))
-        else:
-            momentum[k] = beta1 * momentum[k] + (1 - beta1) * - delta @ np.reshape(np.insert(train[:, column_no], 0, 1), [1, np.shape(train)[0] + 1])
-            velocity[k] = beta2 * velocity[k] + (1 - beta2) * np.square(delta @ np.reshape(np.insert(train[:, column_no], 0, 1), [1, np.shape(train)[0] + 1]))
-        mcorr = momentum[k] / (1 - beta1 ** (epoch + 1)) # Corrected momentum and velocity
-        vcorr = velocity[k] / (1 - beta2 ** (epoch + 1))
-        weight[k] = weight[k] - (eta / np.sqrt(vcorr + epsilon)) * mcorr
-    return weight
+        if k == len(layer) - 1:                                                                                                                                             # Local gradient for the output layer neurons
+            delta = (np.reshape(traintarget[:, column], [len(traintarget[:, column]), 1]) - xo[k]) * activation_derivative(v[k], act_func[k])
+        else:                                                                                                                                                               # Local gradient for the hidden layer neurons: current layer local gradient = last layer weight(excluding bias) transposed @  layer local gradient x current layer activation functions' derivative
+            delta = (weight[k + 1][:, 1:].T @ delta) * np.reshape(activation_derivative(v[k], act_func[k]), [len(v[k]), 1])
+        if k != 0:                                                                                                                                                          # Update first and second order moments for the output and the hidden layers
+            mAD[k] = beta1Adam * mAD[k] + (1 - beta1Adam) * - delta @ np.reshape(xo[k - 1], [1, len(xo[k - 1])])                                                            # m = beta1 * m + (1-beta1) * gradient
+            vAD[k] = beta2Adam * vAD[k] + (1 - beta2Adam) * np.square(- delta @ np.reshape(xo[k - 1], [1, len(xo[k - 1])]))                                                 # v = beta2 * v + (1-beta2) * gradient^2
+        else:                                                                                                                                                               # Update first and second order moments for  the input layers
+            mAD[k] = beta1Adam * mAD[k] + (1 - beta1Adam) * - delta @ np.reshape(train[:, column], [1, input_dim])
+            vAD[k] = beta2Adam * vAD[k] + (1 - beta2Adam) * np.square(- delta @ np.reshape(train[:, column], [1, input_dim]))
+        mcorr = mAD[k] / (1 - beta1Adam ** epoch)                                                                                                                           # De-biasing terms
+        vcorr = vAD[k] / (1 - beta2Adam ** epoch)
+        weight[k] = weight[k] - (eta / np.sqrt(vcorr + epsAdam)) * mcorr                                                                                                    # w = w - eta * mcorr/sqrt(vcorr+e)
+    return weight, mAD, vAD
 
-
-def prediction(weight, test, tetarget):
-    y = np.zeros((np.shape(tetarget)[0], np.shape(test)[1]))
-    for j in range(np.shape(test)[1]):
-        for i in range(len(weight)):
-            if i == 0:
-                v = weight[i] @ np.reshape(np.insert(test[:, j], 0, 1),[np.shape(test[:, j])[0] + 1, 1])  # Input [1;x] for every test data
-            else:
-                v = weight[i] @ np.reshape(xo, [np.shape(xo)[0], 1])
-            if i != len(weight) - 1:
-                xo = np.insert(np.tanh(v), 0, 1)
-            else:
-                xo = 1 * v
-        y[:, j] = np.array(xo.T)  # Replace each column of zeros with the predicted output
+# Model predictions on training and test set, no net activation and activation dictionaries created
+def prediction(weight, set, settarget, act_func):
+    input_dim = np.shape(set)[0]
+    output_dim = np.shape(settarget)[0]                                                                                 # Dimension of the output
+    y = np.empty((output_dim, 1))                                                                                       # Initialize model predictions with 2D empty array, the bias is excluded
+    for i in range(np.shape(set)[1]):
+        for j in range(len(weight)):
+            if j == 0:                                                                                                  # Net activation for the first hidden layer
+                z = weight[j] @ np.reshape(set[:, i],[input_dim, 1])
+            else:                                                                                                       # Net activation for the rest of the layers
+                z = weight[j] @ np.reshape(a,[len(a), 1])
+            if j != len(weight) - 1:                                                                                    # Activation for the hidden layers
+                a = np.insert(activation(z, act_func[j]), 0, 1)
+            else:                                                                                                       # Activation for the output layer
+                a = activation(z, act_func[j])
+        y = np.concatenate((y,a),axis=1)                                                                                # Concatenate all the model predictions (column vectors) horizontally
+    y = np.reshape(np.delete(y,0, axis=1),[output_dim, np.shape(set)[1]])                                               # Remove the initial empty column (empty does not mean void, but something in the memory at the time)
     return y
 
-
-def train_network(weight, layer, train, trtarget, test, tetarget, eta, act_func, algorithm, performance):
-    m, ve = {}, {}
-    error = np.inf
-    e = 0
-    for i in range(len(weight)):
-        m[i] = np.random.uniform(0, 1, [np.shape(weight[i])[0], np.shape(weight[i])[1]])
-        ve[i] = np.random.uniform(0, 1, [np.shape(weight[i])[0], np.shape(weight[i])[1]]) # Ensure that v0 is not negative due to the root on the denominator of adam
-    while error > performance and e < 10000: # Train the model until the performance is reached
-        for j in range(np.shape(train)[1]):  # Select all the inputs in the same column (in case of multiple inputs)
-            v, xo = forward_propagation(weight, train, act_func, j)
-            if algorithm == 'SGD':
-                weight = SGD(weight, layer, train, trtarget, v, xo, j, eta, act_func)
+# Train the network with given hyperparameters and optimizers
+def train_network(weight, mAD, vAD, layer, train, traintarget, test, testtarget, eta, beta1, beta2, eps, act_func, algorithm, performance, max_epoch):
+    costtrain = np.inf                                                                                                  # Cost on training set, set to infinite to enter the while loop
+    costtrainrecord, costtestrecord, epochrecord = [], [], []
+    e = 1
+    n = np.shape(train)[1]                                                                                              # Number of training input
+    N = np.shape(test)[1]                                                                                               # Number of test input
+    while costtrain > performance and e <= max_epoch:                                                                   # Train the model until the performance is reached
+        for i in range(n):
+            z, a = forward_propagation(weight, train, act_func, i)                                                      # obtain net activation and activation by forward propagation
+            if algorithm == 'SGD':                                                                                      # Select algorithms to train the network and update weights accordingly
+                weight = SGD(weight, layer, train, traintarget, z, a, i, eta, act_func)
             elif algorithm == 'Adam':
-                weight = Adam(weight, m, ve, layer, train, trtarget, v, xo, j, eta, act_func, e)
-        y = prediction(weight,test,tetarget)
-        error = 0
-        for k in range(np.shape(y)[1]): # Calculate MSE
-            for n in range(np.shape(y)[0]):
-                error = error + np.square((tetarget[n, k] - y[n, k]))
-        error = 1 / (np.shape(tetarget)[1] * np.shape(tetarget)[0]) * error
+                weight, mAD, vAD = Adam(weight, mAD, vAD, layer, train, traintarget, z, a, i, eta, beta1, beta2, eps, act_func, e)
+        ytr = prediction(weight, train, traintarget, act_func)                                                          # Predictions on training set
+        yte = prediction(weight, test, testtarget, act_func)                                                            # Predictions on test set
+        costtrain = np.sum(np.square((traintarget - ytr)))
+        costtrain = 1 / n * costtrain                                                                                   # Loss (MSE) on the training set
+        costtest = np.sum(np.square((testtarget - yte)))
+        costtest = 1 / N * costtest                                                                                     # Loss (MSE) on the test set
+        costtrainrecord.append(costtrain)
+        costtestrecord.append(costtest)
+        epochrecord.append(e)
+        if e % (max_epoch/10) == 0:                                                                                     # Display the current training progress
+            print(e / max_epoch * 100, '%')
         e = e + 1
-    print(algorithm,'Mean Square Error:',error)
-    print('Epoch number:', e)
-    return weight
+    print('Epoch number:', e - 1)
+    return weight, costtrainrecord, costtestrecord, epochrecord
 
+# Perform regression with the trained network
+def regression(train, traintarget, test, testtarget, layer, act_func, eta, beta1, beta2, eps, algorithm, performance, max_epoch):
+    weight, mAD, vAD = parameter_generate(layer, train)                                                                                                                                                         # Weight initialisation
+    weight, costtrainrecord, costtestrecord, epochrecord = train_network(weight, mAD, vAD, layer, train, traintarget, test, testtarget, eta, beta1, beta2, eps, act_func, algorithm, performance, max_epoch)    # Train the network
+    y = prediction(weight, test, testtarget, act_func)                                                                                                                                                          # Prediction on the test set
+    return y, costtrainrecord, costtestrecord, epochrecord
 
-def regression(layer, act_func, eta, algorithm, performance):
-    weight = weight_generate(-0.5, 0.5, layer, xtrain)
-    w = train_network(weight, layer, xtrain, dtrain, xtest, dtest, eta, act_func, algorithm, performance)
-    y = prediction(w, xtest, dtest)
-    return y
-
-
-def regression_plot(layer, act_func, eta, algorithm, performance):
-    rows = int(np.sqrt(len(algorithm)))
-    columns = round(len(algorithm) / rows)
-    for i in range(len(algorithm)):
-        y = regression(layer, act_func, eta, algorithm[i], performance)
-        plt.subplot(rows, columns, i + 1)
-        plt.plot(xtest[0], dtest[0], label='test data', marker='+', color='k', linestyle='None')
-        plt.plot(xtest[0], y[0], label='test prediction')
-        plt.xlabel('xtest'), plt.ylabel('Output'), plt.title(algorithm[i])
-        plt.legend()
-    plt.show()
-
-
-def iris_data_preprocess(filename, encoding, split_ratio):
-    iris = pd.read_csv(filename, header=None)
-
-    iris = pd.get_dummies(iris, columns=[iris.columns[-1]])  # Same as OneHotEncoder
-    rename = {iris.columns[-3]: 'setosa', iris.columns[-2]: 'versicolor',
-              iris.columns[-1]: 'virginica'}  # Rename to be more concise
-    iris = iris.rename(columns=rename)
-
-    encoder = {True: encoding[0], False: encoding[1]}  # Encode again, for each type of iris with to suit tanh
-    replace = {'setosa': encoder, 'versicolor': encoder, 'virginica': encoder}
-    iris = iris.replace(replace)
-
-    iris = iris.sample(frac=1).reset_index(drop=True)  # Randomize the rows and delete the old indices
-
-    ratio = round(iris.shape[0] * split_ratio)
-    iristrain = iris[:ratio]  # Stratify to train and test sets
-    iristest = iris[ratio:iris.shape[0]]
-    irisxtrain = iristrain.iloc[:, :4].to_numpy().T  # Arrange inputs in columns
-    irisdtrain = iristrain.iloc[:, 4:].to_numpy().T
-    irisxtest = iristest.iloc[:, :4].to_numpy().T
-    irisdtest = iristest.iloc[:, 4:].to_numpy().T
-
-    return irisxtrain, iristest, irisxtrain, irisdtrain, irisxtest, irisdtest
-
-
-def classification(layer, act_func, eta, algorithm, encoding, split_ratio, performance):
-    irisxtrain, iristest, irisxtrain, irisdtrain, irisxtest, irisdtest = iris_data_preprocess('IrisData.txt', encoding, split_ratio)
-    weight = weight_generate(-0.5, 0.5, layer, irisxtrain)
-    w = train_network(weight, layer, irisxtrain, irisdtrain, irisxtest, irisdtest, eta, act_func, algorithm, performance)
-    yy = prediction(w, irisxtest, irisdtest)
-
-    d, y = [],[]
-    for i in range(np.shape(yy)[1]):
-        d.append(np.argmax(irisdtest[:, i]))
-        y.append(np.argmax(yy[:, i]))
-    error = abs(np.array(d) - np.array(y))
-    accuracy = (1 - np.shape(np.nonzero(error))[1] / np.shape(yy)[1]) * 100
-    return d, y, error, accuracy
-
-
-def classification_plot(layer, act_func, eta, algorithm, encoding, split_ratio, performance):
-    rows = int(np.sqrt(len(algorithm)))
-    columns = round(len(algorithm) / rows)
-    counter = 1
-    for i in range(len(algorithm)):
-        d, y, error, accuracy = classification(layer, act_func, eta, algorithm[i], encoding, split_ratio, performance)
-        plt.subplot(rows * 2, columns, i + counter)
-        counter += 1
-        plt.plot(d, label='test data', marker='+', color='k', linestyle='None')
-        plt.plot(y, 'r', label='test prediction')
-        plt.xlabel('xtest index'), plt.ylabel('Iris Encoding'), plt.title('Setosa:0, Versicolor:1, Virginica:2')
-        plt.subplot(rows * 2, columns, i + counter)
-        plt.plot(error, 'bo', label=f'Accuracy:{accuracy:.2f}%')
-        plt.xlabel('xtest index'), plt.ylabel('Error'), plt.title(algorithm[i])
-        plt.legend()
-    plt.show()
-
-
-def main():
-    algorithm = ['SGD', 'Adam']
-    # === Regression === #
-    layer = [3,1]
-    act_func = ['tanh','linear']
-    eta = 0.01
-    performance = 9e-4
-    regression_plot(layer, act_func, eta, algorithm, performance)
-
-
-
-    # === Classification === #
-    layer = [5,3,3]
-    act_func = ['tanh','tanh','linear']
-    eta = 0.01
-    encoding = [0.6, -0.6]
-    split_ratio = 0.7
-    performance = 0.03
-    classification_plot(layer, act_func, eta, algorithm, encoding, split_ratio, performance)
-
-
-if __name__ == "__main__":
-    main()
+# Perform classification with the trained network
+def classification(train, trainlabel, test, testlabel, layer, act_func, eta, beta1, beta2, eps, algorithm, performance, max_epoch):                                                           # Perform regression with trained network
+    weight, mAD, vAD = parameter_generate(layer, train)                                                                                                                                                         # Weight initialisation
+    weight, costtrainrecord, costtestrecord, epochrecord = train_network(weight, mAD, vAD, layer, train, trainlabel, test, testlabel, eta, beta1, beta2, eps, act_func, algorithm, performance, max_epoch)      # Train the network
+    y = prediction(weight, test, testlabel, act_func)                                                                                                                                                           # Prediction on the test set
+    return y, costtrainrecord, costtestrecord, epochrecord
